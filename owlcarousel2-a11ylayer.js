@@ -1,10 +1,172 @@
 /**
  * Owl Carousel v2 Accessibility Plugin
- * Version 0.2.1
+ * Version 0.2.2
  * © Geoffrey Roberts 2016
  */
 
 ;(function($, window, document){
+  var controlsObservers = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
+
+  /**
+   * Apply W3C carousel pattern attributes on the root element.
+   */
+  function syncCarouselRootA11y($carousel) {
+    var attrs = {
+      role: 'region',
+      'aria-roledescription': 'diaporama'
+    };
+
+    if (!$carousel.attr('aria-label') && !$carousel.attr('aria-labelledby')) {
+      attrs['aria-label'] = 'Diaporama';
+    }
+
+    if (typeof $carousel.attr('tabindex') === 'undefined') {
+      attrs.tabindex = '0';
+    }
+
+    $carousel.attr(attrs);
+  }
+
+  /**
+   * Apply W3C slide pattern attributes on stage items.
+   */
+  function syncCarouselSlidesA11y($carousel, core) {
+    if (!core || !core.$stage) {
+      return;
+    }
+
+    var total = core.items().length;
+    var slideLabel = (core.relative(core.current()) + 1) + ' sur ' + total;
+
+    core.$stage.children().each(function() {
+      var item = $(this);
+      var isActive = item.hasClass('active');
+      var attrs = {
+        role: 'group',
+        'aria-roledescription': 'diapositive',
+        'aria-hidden': isActive ? 'false' : 'true'
+      };
+
+      if (isActive) {
+        attrs['aria-label'] = slideLabel;
+      }
+
+      item.attr(attrs);
+
+      if (!isActive) {
+        item.removeAttr('aria-label');
+      }
+    });
+  }
+
+  /**
+   * Sync nav disabled state and dot list roles for one carousel instance.
+   */
+  function syncCarouselControlsA11y($carousel, core) {
+    var navButtons = $carousel.find('.owl-prev, .owl-next');
+
+    if (!!core && !!core._plugins && !!core._plugins.navigation && !!core._plugins.navigation._controls) {
+      var controls = core._plugins.navigation._controls;
+      if (!!controls.$previous) {
+        navButtons = navButtons.add(controls.$previous);
+      }
+      if (!!controls.$next) {
+        navButtons = navButtons.add(controls.$next);
+      }
+    }
+
+    navButtons.each(function() {
+      var btn = $(this);
+      var hadFocus = document.activeElement === this;
+
+      if (btn.hasClass('disabled')) {
+        btn.attr('disabled', 'true');
+        if (hadFocus) {
+          var $carouselRoot = btn.closest('.owl-carousel');
+          var fallback = btn.siblings('.owl-prev, .owl-next').not('.disabled').first();
+          if (fallback.length) {
+            fallback[0].focus({ preventScroll: true });
+          }
+          else if ($carouselRoot.length) {
+            $carouselRoot[0].focus({ preventScroll: true });
+          }
+        }
+      }
+      else {
+        btn.removeAttr('disabled');
+      }
+    });
+
+    var dotsContainers = $carousel.find('.owl-dots');
+    if (!!core && !!core._plugins && !!core._plugins.navigation && !!core._plugins.navigation._controls.$indicators) {
+      dotsContainers = dotsContainers.add(core._plugins.navigation._controls.$indicators);
+    }
+    if (!!core && !!core.settings && !!core.settings.dotsContainer) {
+      dotsContainers = dotsContainers.add($(core.settings.dotsContainer));
+    }
+
+    dotsContainers.each(function(index, el) {
+      if (dotsContainers.index(el) !== index) {
+        return;
+      }
+      var dots = $(el);
+      dots.attr('role', 'list');
+      dots.children().each(function() {
+        var dot = $(this);
+        dot.attr('role', 'listitem');
+        if (dot.hasClass('active')) {
+          dot.attr('aria-current', 'true');
+        }
+        else {
+          dot.removeAttr('aria-current');
+        }
+      });
+    });
+  }
+
+  /**
+   * Sync all carousel a11y attributes for one instance.
+   */
+  function syncCarouselA11y($carousel, core) {
+    syncCarouselRootA11y($carousel);
+    syncCarouselSlidesA11y($carousel, core);
+    syncCarouselControlsA11y($carousel, core);
+  }
+
+  /**
+   * Watch controls DOM changes for one carousel (dots rebuild, disabled class).
+   */
+  function observeCarouselControls($carousel, core) {
+    if ($carousel.data('owl-a11y-controls-observer')) {
+      return;
+    }
+
+    var controlsEl = $carousel.find('.owl-controls')[0];
+    if (!controlsEl && !!core && !!core._plugins && !!core._plugins.navigation && !!core._plugins.navigation._controls.$element) {
+      controlsEl = core._plugins.navigation._controls.$element[0];
+    }
+
+    if (!controlsEl || typeof MutationObserver === 'undefined') {
+      return;
+    }
+
+    var observer = new MutationObserver(function() {
+      syncCarouselControlsA11y($carousel, core);
+    });
+
+    observer.observe(controlsEl, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class']
+    });
+
+    $carousel.data('owl-a11y-controls-observer', observer);
+    if (!!controlsObservers) {
+      controlsObservers.set(controlsEl, observer);
+    }
+  }
+
   var Owl2A11y = function(carousel) {
     this._core = carousel;
     this._initialized = false;
@@ -23,8 +185,14 @@
         if (e.namespace && !this._initialized) {
           this.setupFocus();
           this.setupKeyboard();
+          this._initialized = true;
         }
         this.setCurrent(e);
+        var self = this;
+        setTimeout(function() {
+          self.syncControlsA11y();
+          self.observeControls();
+        }, 0);
       }, this),
       'changed.owl.carousel': setCurrent,
       'translated.owl.carousel': setCurrent,
@@ -86,13 +254,10 @@
   /* SETUP AND TEAR DOWN */
 
   /**
-   * Assign attributes to the root element.
+   * Assign attributes to the root element (W3C carousel pattern).
    */
   Owl2A11y.prototype.setupRoot = function() {
-    this.$element.attr({
-      role: 'listbox',
-      tabindex: '0'
-    });
+    syncCarouselRootA11y(this.$element);
   };
 
   /**
@@ -125,28 +290,37 @@
     });
 
     // Add tabindex to allow navigation to be focused.
-    if (!!this._core._plugins.navigation) {
-      var navPlugin = this._core._plugins.navigation,
-      toFocus = [];
-      if (!!navPlugin._controls.$previous) {
-        toFocus.push(navPlugin._controls.$previous);
-      }
-      if (!!navPlugin._controls.$next) {
-        toFocus.push(navPlugin._controls.$next);
-      }
-      if (!!navPlugin._controls.$indicators) {
-        toFocus.push(navPlugin._controls.$indicators.children());
-      }
-      $.each(toFocus, function(){
-        this.attr('tabindex', '0');
-      });
-    }
+    var toFocus = [];
+    toFocus.push(this.$element.find('.owl-prev, .owl-next'));
+    toFocus.push(this.$element.find('.owl-dots').children());
+    $.each(toFocus, function() {
+      this.attr('tabindex', '0');
+    });
+  };
+
+  /**
+   * Sync a11y attributes on nav buttons and dot indicators for this carousel.
+   */
+  Owl2A11y.prototype.syncControlsA11y = function() {
+    syncCarouselA11y(this.$element, this._core);
+  };
+
+  /**
+   * Observe controls DOM changes for this carousel instance.
+   */
+  Owl2A11y.prototype.observeControls = function() {
+    observeCarouselControls(this.$element, this._core);
   };
 
   /**
    * Assign attributes to the root element.
    */
   Owl2A11y.prototype.destroy = function() {
+    var observer = this.$element.data('owl-a11y-controls-observer');
+    if (!!observer) {
+      observer.disconnect();
+      this.$element.removeData('owl-a11y-controls-observer');
+    }
     this.$element.unbind('keyup', this.eventHandlers.documentKeyUp)
     .removeAttr('data-owl-access-keyup data-owl-carousel-focusable')
     .unbind('focusin focusout');
@@ -239,51 +413,67 @@
    *   The triggering event.
    */
   Owl2A11y.prototype.setCurrent = function(e) {
-    var targ = this.focused($(':focus')),
-    element = this._core.$element,
+    var element = this._core.$element,
     stage = this._core.$stage,
     focusableElems = this.focusableElems,
     adjustFocus = this.adjustFocus;
 
     if (!!stage) {
-      var offs = stage.offset();
-      if (!!targ) {
-        window.scrollTo(
-          offs.left,
-          offs.top - parseInt($('body').css('padding-top'), 10)
-        );
-      }
-
       this._core.$stage.children().each(function(i) {
         var item = $(this);
         var focusable = focusableElems(this);
+        var isActive = item.hasClass('active');
 
-        // Use the active class to determine if we can see it or not.
-        // Pretty lazy, but the Owl API doesn't make it easy to tell
-        // from indices alone.
-        if (item.hasClass('active')) {
-          item.attr('aria-hidden', 'false');
+        if (isActive) {
           adjustFocus(focusable, true);
         }
         else {
-          item.attr('aria-hidden', 'true');
           adjustFocus(focusable, false);
         }
       });
-
-      if (!!targ) {
-        // Focus on the root element after we're done moving,
-        // but only if we're not using the controls.
-        setTimeout(function(){
-          var newFocus = element;
-          if ($(':focus').closest('.owl-controls').length) {
-            newFocus = $(':focus');
-          }
-          newFocus.focus();
-        }, 250);
-      }
     }
+
+    this.syncControlsA11y();
   };
 
-  $.fn.owlCarousel.Constructor.Plugins['Owl2A11y'] = Owl2A11y;
+  function registerOwl2A11yPlugin() {
+    if (!$.fn.owlCarousel || !$.fn.owlCarousel.Constructor) {
+      return false;
+    }
+    $.fn.owlCarousel.Constructor.Plugins['Owl2A11y'] = Owl2A11y;
+    return true;
+  }
+
+  function handleCarouselControlsA11y(e) {
+    if (!e.namespace) {
+      return;
+    }
+    var $carousel = $(e.target);
+    var core = $carousel.data('owl.carousel');
+    syncCarouselA11y($carousel, core);
+    if (e.type === 'initialized') {
+      observeCarouselControls($carousel, core);
+    }
+  }
+
+  $(document).on(
+    'initialized.owl.carousel refreshed.owl.carousel resized.owl.carousel changed.owl.carousel translated.owl.carousel',
+    '.owl-carousel',
+    handleCarouselControlsA11y
+  );
+
+  if (!registerOwl2A11yPlugin()) {
+    $(registerOwl2A11yPlugin);
+  }
+
+  $(function() {
+    $('.owl-carousel').each(function() {
+      var $carousel = $(this);
+      var core = $carousel.data('owl.carousel');
+      if (!!core) {
+        syncCarouselA11y($carousel, core);
+        observeCarouselControls($carousel, core);
+      }
+    });
+  });
 })(window.Zepto || window.jQuery, window,  document);
